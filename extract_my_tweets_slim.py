@@ -11,8 +11,8 @@ INPUT_DIR   = pathlib.Path('./input')
 OUTPUT_DIR  = pathlib.Path('./output')
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# MY_SCREEN_NAME: str | None = None      # 例: "a2see"（未指定ならヒューリスティック）
-MY_SCREEN_NAME = "a2see"      # 例: "a2see"（未指定ならヒューリスティック）
+# ★ ここに @スクリーンネームを指定する
+MY_SCREEN_NAME = "myname"      # 例: "a2see"
 
 JS_HEADER_RE = re.compile(r'^window\.YTD\.tweets\.part\d+\s*=\s*', re.S)
 KEEP_KEYS    = ('created_at', 'full_text')   # ← 欲しいフィールドはここで制御

@@ -14,9 +14,8 @@ INPUT_DIR   = pathlib.Path('./input')
 OUTPUT_DIR  = pathlib.Path('./output')
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# ★ ここに @スクリーンネームを書けば最も正確
-# MY_SCREEN_NAME: str | None = None      # 例: "a2see"
-MY_SCREEN_NAME = "a2see"
+# ★ ここに @スクリーンネームを指定する
+MY_SCREEN_NAME = "myname"      # 例: "a2see"
 
 #------------------------------------------------------------
 JS_HEADER_RE = re.compile(r'^window\.YTD\.tweets\.part\d+\s*=\s*', re.S)

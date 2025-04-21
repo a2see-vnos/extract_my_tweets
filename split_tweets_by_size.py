@@ -2,105 +2,166 @@
 """
 split_tweets_by_size.py
 ────────────────────────────────────────────────────────────
-gzip 圧縮された JSONL（created_at / full_text のみ）を読み込み、
-  • 出力は “圧縮なし .jsonl”
-  • 1 ファイル 5 MiB 未満
-  • ファイル名に {最小年}-{最大年}_pXX サフィックス
-
-例）
-  output/split/self_tweets_2018-2019_p01.jsonl
-  output/split/self_tweets_2020-2021_p01.jsonl
-  output/split/self_tweets_2020-2021_p02.jsonl
+デフォルト:  年を跨いで 5 MiB 単位で連結 (output/aggregate)
+--yearly-only: 年ごとに 5 MiB 分割して終了 (output/split)
 """
 
+import argparse
 import gzip
 import json
 import os
 import pathlib
+import re
+import shutil
 from typing import TextIO
 
-# ---------- 設定 ----------
-INPUT_FILE = pathlib.Path("output/self_tweets.slim.jsonl.gz")
-OUT_DIR    = pathlib.Path("output/split")
-MAX_BYTES  = 5 * 1024 * 1024          # 5 MiB
+INPUT_GZ   = pathlib.Path("output/self_tweets.slim.jsonl.gz")
+TMP_DIR    = pathlib.Path("tmp_years")
+SPLIT_DIR  = pathlib.Path("output/split")
+AGG_DIR    = pathlib.Path("output/aggregate")
+MAX_BYTES  = 5 * 1024 * 1024  # 5 MiB
 
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+YEAR_FILE_RE = re.compile(r"self_tweets_(\d{4})_p(\d{2})\.jsonl$")
 
 
-# ---------- ヘルパ ----------
+# ── 共通 ──────────────────────────────────────────
 def parse_year(created_at: str) -> int:
-    """
-    Twitter 'created_at' 文字列 → 年 (int)
-      例: 'Fri Mar 14 18:16:18 +0000 2025' -> 2025
-    """
     return int(created_at.rsplit(" ", 1)[-1])
 
 
-def open_writer(min_year: int, max_year: int, part_no: int) -> tuple[str, TextIO]:
-    """
-    書き込み用ファイルハンドルを開く（暫定名 = プレフィックス _tmp_pXX.jsonl）
-    ファイル完成時に rename で確定名へ変更する。
-    """
-    tmp_name = f"tmp_p{part_no:02d}.jsonl"
-    fh = open(OUT_DIR / tmp_name, "w", encoding="utf-8", newline="\n")
-    return tmp_name, fh
+def ensure_dirs(*dirs):
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
 
 
-# ---------- メイン ----------
-def main() -> None:
-    if not INPUT_FILE.exists():
-        raise SystemExit(f"入力ファイルが見つかりません: {INPUT_FILE}")
+# ── STEP‑1: 年別バケツ ─────────────────────────────
+def bucket_by_year():
+    writers: dict[int, TextIO] = {}
+    with gzip.open(INPUT_GZ, "rt", encoding="utf-8") as src:
+        for ln in src:
+            y = parse_year(json.loads(ln)["created_at"])
+            if y not in writers:
+                writers[y] = open(TMP_DIR / f"{y}.jsonl", "w", encoding="utf-8", newline="\n")
+            writers[y].write(ln)
+    for fh in writers.values():
+        fh.close()
+    print(f"[1/3] {len(writers)} 年に振り分け完了 → {TMP_DIR}")
 
-    current_size: int | None = None
-    year_min = year_max = None
-    part_no = 1
-    out_tmp_name: str | None = None
-    out_fh: TextIO | None = None
 
-    def rotate(new_year: int) -> None:
-        """現在のファイルを閉じてリネームし、次ファイルを準備"""
-        nonlocal part_no, out_tmp_name, out_fh, year_min, year_max, current_size
-        if out_fh is not None:
-            out_fh.close()  # Windows の WinError 32 対策
-            final_name = f"self_tweets_{year_min}-{year_max}_p{part_no:02d}.jsonl"
-            os.replace(OUT_DIR / out_tmp_name, OUT_DIR / final_name)
-            part_no += 1
+# ── STEP‑2: 年ごと 5 MiB 分割 ───────────────────────
+def split_year_file(path: pathlib.Path, year: int):
+    part_no, size = 1, 0
+    tmp = None
+    out_fh = None
 
-        # 新しいファイルを開く
-        year_min = year_max = new_year
-        out_tmp_name, out_fh = open_writer(year_min, year_max, part_no)
-        current_size = 0
+    def open_tmp():
+        nonlocal tmp, out_fh, size
+        tmp = SPLIT_DIR / f"tmp_{year}_p{part_no:02d}.jsonl"
+        out_fh = open(tmp, "w", encoding="utf-8", newline="\n")
+        size = 0
 
-    with gzip.open(INPUT_FILE, "rt", encoding="utf-8") as src:
-        for line_raw in src:
-            obj = json.loads(line_raw)
-            year = parse_year(obj["created_at"])
-
-            # 初回または rotate 直後にファイルを開く
-            if out_fh is None:
-                rotate(year)
-
-            # 年範囲更新
-            year_min = min(year_min, year)
-            year_max = max(year_max, year)
-
-            # 追加後サイズを試算
-            line_json = json.dumps(obj, ensure_ascii=False) + "\n"
-            line_bytes = len(line_json.encode("utf-8"))
-            if current_size + line_bytes > MAX_BYTES:
-                # 現在ファイルを確定 → 新ファイル開始
-                rotate(year)
-
-            out_fh.write(line_json)
-            current_size += line_bytes
-
-    # ループ終了後のファイル確定
-    if out_fh is not None:
+    def close_and_rename():
+        nonlocal tmp, out_fh
+        if out_fh is None:
+            return
         out_fh.close()
-        final_name = f"self_tweets_{year_min}-{year_max}_p{part_no:02d}.jsonl"
-        os.replace(OUT_DIR / out_tmp_name, OUT_DIR / final_name)
+        final = SPLIT_DIR / f"self_tweets_{year}_p{part_no:02d}.jsonl"
+        os.replace(tmp, final)
+        tmp, out_fh = None, None
 
-    print(f"✔ 完了: {OUT_DIR} に分割保存しました。")
+    open_tmp()
+    with open(path, "r", encoding="utf-8") as src:
+        for ln in src:
+            b = len(ln.encode())
+            if size + b > MAX_BYTES:
+                close_and_rename()
+                part_no += 1
+                open_tmp()
+            out_fh.write(ln)
+            size += b
+    close_and_rename()
+    print(f"    {year}: p{part_no:02d} まで生成")
+
+def split_all_years():
+    for p in sorted(TMP_DIR.glob("*.jsonl")):
+        split_year_file(p, int(p.stem))
+    shutil.rmtree(TMP_DIR)
+    print(f"[2/3] 年ごと 5 MiB 分割完了 → {SPLIT_DIR}")
+
+
+# ── STEP‑3: 集約 (デフォルト) ──────────────────────
+def aggregate_files():
+    files = sorted(
+        SPLIT_DIR.glob("self_tweets_*.jsonl"),
+        key=lambda p: (int(YEAR_FILE_RE.match(p.name)[1]),
+                       int(YEAR_FILE_RE.match(p.name)[2])),
+    )
+    if not files:
+        print("[3/3] 集約対象がありません。")
+        return
+
+    ensure_dirs(AGG_DIR)
+    part_no, size = 1, 0
+    start_year = end_year = None
+    tmp = None
+    out_fh = None
+
+    def open_tmp():
+        nonlocal tmp, out_fh, size
+        tmp = AGG_DIR / f"tmp_p{part_no:02d}.jsonl"
+        out_fh = open(tmp, "w", encoding="utf-8", newline="\n")
+        size = 0
+
+    def close_and_rename():
+        nonlocal tmp, out_fh
+        if out_fh is None:
+            return
+        out_fh.close()
+        final = AGG_DIR / f"self_tweets_{start_year}-{end_year}_p{part_no:02d}.jsonl"
+        os.replace(tmp, final)
+        tmp, out_fh = None, None
+
+    open_tmp()
+    for fp in files:
+        with open(fp, "r", encoding="utf-8") as src:
+            for ln in src:
+                y = parse_year(json.loads(ln)["created_at"])
+                start_year = y if start_year is None else start_year
+                end_year = y
+                b = len(ln.encode())
+                if size + b > MAX_BYTES:
+                    close_and_rename()
+                    part_no += 1
+                    open_tmp()
+                    start_year = end_year = y
+                out_fh.write(ln)
+                size += b
+    close_and_rename()
+    print(f"[3/3] 年代横断 5 MiB 分割完了 → {AGG_DIR}")
+
+
+# ── メイン ──────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(
+        description="自ツイ JSONL を 5 MiB 単位で分割します "
+                    "(デフォルト: 年代横断で再集約)"
+    )
+    parser.add_argument(
+        "--yearly-only",
+        action="store_true",
+        help="年ごとの 5 MiB 分割までで終了 (output/split のみ)"
+    )
+    args = parser.parse_args()
+
+    if not INPUT_GZ.exists():
+        raise SystemExit("self_tweets.slim.jsonl.gz が見つかりません。")
+
+    ensure_dirs(TMP_DIR, SPLIT_DIR)
+    bucket_by_year()
+    split_all_years()
+
+    if not args.yearly_only:
+        aggregate_files()
 
 
 if __name__ == "__main__":

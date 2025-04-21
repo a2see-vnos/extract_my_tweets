@@ -64,18 +64,14 @@ output/self_tweets.slim.jsonl.gz
 
 ## 3. 5 MB 未満で分割
 
-```
-python split_tweets_by_size.py
-```
+| コマンド | 動作 | 主な生成物 |
+|----------|------|-----------|
+| `python split_tweets_by_size.py` | **デフォルト**: 年単位でいったん分割した後、年代をまたいで 5 MiB ごとに再集約 | `output/aggregate/self_tweets_<開始年>-<終了年>_pXX.jsonl`<br>`output/split/self_tweets_<年>_pXX.jsonl` |
+| `python split_tweets_by_size.py --yearly-only` | 年ごとに 5 MiB 未満で分割して終了 | `output/split/self_tweets_<年>_pXX.jsonl` |
 
-生成物（例）
-```
-output/split/
- ├─ self_tweets_2018-2019_p01.jsonl
- ├─ self_tweets_2020-2021_p01.jsonl
- └─ self_tweets_2020-2021_p02.jsonl
-```
-* ファイル名: `self_tweets_<最小年>-<最大年>_pXX.jsonl`
+* ファイル名:  
+  * 年単位分割 → `self_tweets_<YEAR>_pXX.jsonl`  
+  * 集約版  → `self_tweets_<START>-<END>_pXX.jsonl`
 * 1 ファイルのサイズは **5 MiB 未満**  
   （変更したい場合は `MAX_BYTES` を編集）
 
@@ -91,9 +87,11 @@ self_tweets.jsonl.gz
    │  extract_my_tweets_slim.py
    ▼
 self_tweets.slim.jsonl.gz
-   │  split_tweets_by_size.py
+   │  split_tweets_by_size.py   （デフォルト＝集約モード）
    ▼
-split/*.jsonl  （5 MB 未満＆年範囲付き）
+output/
+ ├─ split/       # 年ごとの 5MiB ファイル
+ └─ aggregate/   # 年代横断の 5MiB ファイル
 ```
 
 ---
@@ -102,7 +100,6 @@ split/*.jsonl  （5 MB 未満＆年範囲付き）
 
 | 症状 | 対処 |
 |------|------|
-| `WinError 32` が出る | 最新版 `split_tweets_by_size.py` を使用（リネーム前に close 済） |
 | 出力が空・少ない | `input/` フォルダに正しいファイル名 (`tweets.js` など) が置かれているか確認 |
 | サイズ上限を変えたい | `split_tweets_by_size.py` の `MAX_BYTES` を変更して再実行 |
 
